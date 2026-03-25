@@ -7,7 +7,7 @@ package com.example.myapp.speech
  * ```kotlin
  * class MainActivity : AppCompatActivity(), SpeechRecognitionCallback {
  *
- *     override fun onTranscriptionResult(text: String) {
+ *     override fun onSpeechDetected(text: String) {
  *         // Display the transcribed text in your UI
  *         textView.text = text
  *     }
@@ -34,9 +34,23 @@ interface SpeechRecognitionCallback {
     /**
      * Called when speech has been successfully transcribed to text.
      *
+     * This is the primary method for receiving transcription results.
+     * Overriding [onTranscriptionResult] is also sufficient for backward
+     * compatibility — both are invoked with the same text.
+     *
      * @param text The transcribed text from the speech input.
      */
-    fun onTranscriptionResult(text: String)
+    fun onSpeechDetected(text: String) = onTranscriptionResult(text)
+
+    /**
+     * Called when speech has been successfully transcribed to text.
+     *
+     * Implement this method to receive transcription results. New
+     * implementations may prefer [onSpeechDetected] instead.
+     *
+     * @param text The transcribed text from the speech input.
+     */
+    fun onTranscriptionResult(text: String) {}
 
     /**
      * Called when an error occurs during recording or transcription.
@@ -48,10 +62,10 @@ interface SpeechRecognitionCallback {
     /**
      * Called when microphone recording has started successfully.
      */
-    fun onRecordingStarted()
+    fun onRecordingStarted() {}
 
     /**
      * Called when microphone recording has stopped and transcription is in progress.
      */
-    fun onRecordingStopped()
+    fun onRecordingStopped() {}
 }

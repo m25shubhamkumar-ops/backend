@@ -18,7 +18,7 @@ import java.io.ByteArrayOutputStream
  *
  *     override fun onCreate(savedInstanceState: Bundle?) {
  *         super.onCreate(savedInstanceState)
- *         speechService = SpeechRecognitionService(this, this)
+ *         speechService = SpeechRecognitionService(this, this, apiKey)
  *     }
  *
  *     // Called when mic button is pressed
@@ -52,10 +52,12 @@ import java.io.ByteArrayOutputStream
  *
  * @param context  Android [Context] (application or activity context).
  * @param callback Receiver for recording events and transcription results.
+ * @param apiKey   OpenAI API key used to authenticate Whisper API requests.
  */
 class SpeechRecognitionService(
     private val context: Context,
-    private val callback: SpeechRecognitionCallback
+    private val callback: SpeechRecognitionCallback,
+    private val apiKey: String
 ) {
 
     companion object {
@@ -63,7 +65,7 @@ class SpeechRecognitionService(
     }
 
     private val audioRecorder = AudioRecorder()
-    private val speechToTextManager = SpeechToTextManager()
+    private val speechToTextManager = SpeechToTextManager(apiKey)
 
     /** Accumulates raw PCM audio chunks during an active recording session. */
     private val audioBuffer = ByteArrayOutputStream()
@@ -101,7 +103,7 @@ class SpeechRecognitionService(
      * Speech-to-Text API for transcription.
      *
      * [SpeechRecognitionCallback.onRecordingStopped] is called immediately after the
-     * microphone is released.  [SpeechRecognitionCallback.onTranscriptionResult] (or
+     * microphone is released.  [SpeechRecognitionCallback.onSpeechDetected] (or
      * [SpeechRecognitionCallback.onError]) is called once the API responds.
      *
      * Has no effect if no recording is currently active.
@@ -126,7 +128,7 @@ class SpeechRecognitionService(
             Log.d(TAG, "Submitting ${audioData.size} bytes for transcription")
             speechToTextManager.transcribeAudio(
                 audioData = audioData,
-                onResult = { transcription -> callback.onTranscriptionResult(transcription) },
+                onResult = { transcription -> callback.onSpeechDetected(transcription) },
                 onError = { error -> callback.onError(error) }
             )
         } catch (e: Exception) {
