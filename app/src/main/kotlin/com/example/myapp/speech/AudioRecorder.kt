@@ -8,8 +8,7 @@ import android.util.Log
 /**
  * Utility class for capturing raw PCM audio from the device microphone.
  *
- * Records 16-bit mono PCM audio at 16 kHz, which is the format expected by
- * Google Cloud Speech-to-Text LINEAR16 encoding.
+ * Records 16-bit mono PCM audio at 16 kHz.
  *
  * Requires the RECORD_AUDIO permission to be granted before calling [startRecording].
  */
@@ -18,7 +17,7 @@ class AudioRecorder {
     companion object {
         private const val TAG = "AudioRecorder"
 
-        /** Sample rate expected by Google Cloud Speech-to-Text (16 kHz). */
+        /** Sample rate for audio capture (16 kHz). */
         const val SAMPLE_RATE_HZ = 16000
 
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO

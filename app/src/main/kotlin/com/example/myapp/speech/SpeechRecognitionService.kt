@@ -1,24 +1,36 @@
 package com.example.myapp.speech
 
 import android.content.Context
+import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
-import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Main orchestrator for the voice-to-code feature.
  *
- * Coordinates [AudioRecorder] and [SpeechToTextManager] and surfaces results
- * to the UI layer via [SpeechRecognitionCallback].
+ * Records audio via [MediaRecorder] and submits it to the OpenAI Whisper API
+ * (through [WhisperApiManager]) for transcription.  Results are surfaced to the
+ * UI layer via [SpeechRecognitionCallback].
  *
  * ## Typical usage (Activity/Fragment)
  * ```kotlin
  * class MainActivity : AppCompatActivity(), SpeechRecognitionCallback {
  *
  *     private lateinit var speechService: SpeechRecognitionService
+ *     private lateinit var apiKeyManager: ApiKeyManager
  *
  *     override fun onCreate(savedInstanceState: Bundle?) {
  *         super.onCreate(savedInstanceState)
- *         speechService = SpeechRecognitionService(this, this)
+ *         apiKeyManager = ApiKeyManager(this)
+ *         val apiKey = apiKeyManager.getApiKey() ?: "YOUR_OPENAI_API_KEY"
+ *         speechService = SpeechRecognitionService(this, this, apiKey)
  *     }
  *
  *     // Called when mic button is pressed
@@ -52,21 +64,24 @@ import java.io.ByteArrayOutputStream
  *
  * @param context  Android [Context] (application or activity context).
  * @param callback Receiver for recording events and transcription results.
+ * @param apiKey   OpenAI API key used to authenticate Whisper API requests.
  */
 class SpeechRecognitionService(
     private val context: Context,
-    private val callback: SpeechRecognitionCallback
+    private val callback: SpeechRecognitionCallback,
+    apiKey: String
 ) {
 
     companion object {
         private const val TAG = "SpeechRecognitionService"
+        private const val AUDIO_FILE_NAME = "voice_record.m4a"
     }
 
-    private val audioRecorder = AudioRecorder()
-    private val speechToTextManager = SpeechToTextManager()
+    private val whisperManager = WhisperApiManager(apiKey)
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val audioFile = File(context.filesDir, AUDIO_FILE_NAME)
 
-    /** Accumulates raw PCM audio chunks during an active recording session. */
-    private val audioBuffer = ByteArrayOutputStream()
+    private var mediaRecorder: MediaRecorder? = null
 
     /**
      * Starts microphone recording.
@@ -77,28 +92,33 @@ class SpeechRecognitionService(
      * Has no effect if recording is already active.
      */
     fun startRecording() {
-        if (audioRecorder.isRecording()) {
+        if (mediaRecorder != null) {
             Log.w(TAG, "startRecording() called while already recording — ignoring")
             return
         }
 
-        audioBuffer.reset()
-
         try {
-            audioRecorder.startRecording { audioData ->
-                audioBuffer.write(audioData)
+            mediaRecorder = createMediaRecorder().apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOutputFile(audioFile.absolutePath)
+                prepare()
+                start()
             }
-            Log.d(TAG, "SpeechRecognitionService: recording started")
+            Log.d(TAG, "Recording started")
             callback.onRecordingStarted()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording: ${e.message}", e)
+            mediaRecorder?.release()
+            mediaRecorder = null
             callback.onError("Failed to start recording: ${e.message ?: "Unknown error"}")
         }
     }
 
     /**
      * Stops microphone recording and submits the captured audio to the
-     * Speech-to-Text API for transcription.
+     * Whisper API for transcription.
      *
      * [SpeechRecognitionCallback.onRecordingStopped] is called immediately after the
      * microphone is released.  [SpeechRecognitionCallback.onTranscriptionResult] (or
@@ -107,31 +127,39 @@ class SpeechRecognitionService(
      * Has no effect if no recording is currently active.
      */
     fun stopRecording() {
-        if (!audioRecorder.isRecording()) {
+        if (mediaRecorder == null) {
             Log.w(TAG, "stopRecording() called with no active recording — ignoring")
             return
         }
 
         try {
-            audioRecorder.stopRecording()
+            mediaRecorder?.stop()
+            mediaRecorder?.release()
+            mediaRecorder = null
             callback.onRecordingStopped()
-
-            val audioData = audioBuffer.toByteArray()
-            if (audioData.isEmpty()) {
-                Log.w(TAG, "No audio data was captured")
-                callback.onError("No audio data was captured")
-                return
-            }
-
-            Log.d(TAG, "Submitting ${audioData.size} bytes for transcription")
-            speechToTextManager.transcribeAudio(
-                audioData = audioData,
-                onResult = { transcription -> callback.onTranscriptionResult(transcription) },
-                onError = { error -> callback.onError(error) }
-            )
+            Log.d(TAG, "Recording stopped, submitting for transcription")
+            transcribeAudio()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop recording: ${e.message}", e)
+            mediaRecorder?.release()
+            mediaRecorder = null
             callback.onError("Failed to stop recording: ${e.message ?: "Unknown error"}")
+        }
+    }
+
+    /**
+     * Sends the recorded audio file to the Whisper API and forwards the result
+     * to the [callback].
+     */
+    private fun transcribeAudio() {
+        serviceScope.launch {
+            withContext(Dispatchers.IO) {
+                whisperManager.transcribeAudio(audioFile)
+            }.onSuccess { text ->
+                callback.onTranscriptionResult(text)
+            }.onFailure { error ->
+                callback.onError("Transcription failed: ${error.message ?: "Unknown error"}")
+            }
         }
     }
 
@@ -141,10 +169,23 @@ class SpeechRecognitionService(
      * Should be called in `Activity.onDestroy()` or the equivalent lifecycle method.
      */
     fun release() {
-        if (audioRecorder.isRecording()) {
-            audioRecorder.stopRecording()
+        try {
+            mediaRecorder?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaRecorder stop during release: ${e.message}")
         }
-        speechToTextManager.shutdown()
+        mediaRecorder?.release()
+        mediaRecorder = null
+        serviceScope.cancel()
+        audioFile.delete()
         Log.d(TAG, "SpeechRecognitionService released")
     }
+
+    private fun createMediaRecorder(): MediaRecorder =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(context)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaRecorder()
+        }
 }
